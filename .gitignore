@@ -66,6 +66,7 @@ llama-batched-swift
 out/
 tmp/
 autogen-*.md
+pkg-adb/*
 
 # Deprecated
 

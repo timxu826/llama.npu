@@ -38,6 +38,10 @@
 #include "htp-msg.h"
 #include "htp_iface.h"
 
+// HMX ops support
+#include "ggml-hexagon-hmx.h"
+#include "htp-ops.h"
+
 static size_t opt_ndev         = 1;
 static size_t opt_nhvx         = 0;  // use all
 static int    opt_arch         = 0;  // autodetect
@@ -2169,6 +2173,19 @@ static void ggml_hexagon_mul_mat(const struct ggml_tensor * op, uint32_t flags) 
     const struct ggml_tensor * src1 = op->src[1];
     const struct ggml_tensor * dst  = op;
 
+    // Check if HMX ops should handle this operation
+    auto * hmx_ctx = ggml_hexagon_get_context();
+    if (hmx_ctx && hmx_ctx->hmx_ops_enabled && htp_ops_support_op(dst)) {
+        // Use HMX implementation
+        int ret = htp_ops_compute_op(const_cast<ggml_tensor *>(dst));
+        if (ret == 0) {
+            return; // HMX ops handled successfully
+        }
+        // Fall through to HVX if HMX failed
+        GGML_LOG_WARN("ggml-hex: HMX ops failed for %s, falling back to HVX\n", dst->name);
+    }
+
+    // Continue with HVX implementation
     auto src0_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src0->buffer->context);
     auto src1_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src1->buffer->context);
     auto dst_buf  = static_cast<ggml_backend_hexagon_buffer_context *>(dst->buffer->context);
@@ -3146,6 +3163,7 @@ static ggml_status ggml_backend_hexagon_graph_compute(ggml_backend_t backend, gg
 
         switch (node->op) {
             case GGML_OP_MUL_MAT:
+                printf("ggml-hex: graph-compute MUL_MAT node %s\n", node->name);
                 ggml_hexagon_mul_mat(node, flags);
                 prev_quant_op = node;
                 break;
@@ -3722,6 +3740,12 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_hostbuf = str_hostbuf ? atoi(str_hostbuf) : 1;
 
     reg->context = new ggml_hexagon_registry(reg);
+
+    // Initialize HMX ops context (singleton)
+    // This will load the HMX ops library if GGML_HEXAGON_ENABLE_HMX=1
+    // print the execution of this function
+    printf("Executing ggml_hexagon_get_context\n");
+    ggml_hexagon_get_context();
 
     HEX_VERBOSE("ggml-hex: size-of-general-req %zu size-of-general-rsp %zu\n", sizeof(struct htp_general_req),
                 sizeof(struct htp_general_rsp));

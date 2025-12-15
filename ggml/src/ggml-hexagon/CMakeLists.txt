@@ -29,7 +29,21 @@ link_custom_library(htp_iface rpcmem)
 
 set(TARGET_NAME ggml-hexagon)
 ggml_add_backend_library(${TARGET_NAME}
-    ggml-hexagon.cpp htp-utils.c htp-utils.h ../../include/ggml-hexagon.h)
+    ggml-hexagon.cpp 
+    htp-utils.c 
+    htp-utils.h 
+    ../../include/ggml-hexagon.h
+    # HMX ops support files
+    ggml-hexagon-hmx.cpp
+    ggml-hexagon-hmx.h
+    htp-ops.cc
+    htp-ops.h
+    rpcmem_mapper.cc
+    rpcmem_mapper.h
+    dsprpc_interface.cc
+    dsprpc_interface.h
+    message.h
+    op_reg.h)
 
 target_link_libraries(${TARGET_NAME} PRIVATE htp_iface)
 target_include_directories(${TARGET_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/htp ${CMAKE_CURRENT_BINARY_DIR})

@@ -61,6 +61,11 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_IQ3_S:    return "IQ3_S - 3.4375 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ3_M:    return "IQ3_S mix - 3.66 bpw";
 
+        // HMX/HVX mixed quantization types
+        case LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_F16:    return "mixed Q4_0 & F16";
+        case LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_Q8_0:   return "mixed Q4_0 & Q8_0";
+        case LLAMA_FTYPE_MOSTLY_MIXED_IQ4_NL_Q8_0: return "mixed IQ4_NL & Q8_0";
+
         default: return "unknown, may not work";
     }
 }
@@ -698,6 +703,8 @@ llama_model_loader::llama_model_loader(
 
             LLAMA_LOG_INFO("%s: - kv %3d: %42s %-16s = %s\n", __func__, i, name, type_name.c_str(), value.c_str());
         }
+        LLAMA_LOG_INFO("AST hello\n");
+
 
         // print type counts
         for (auto & kv : n_type) {

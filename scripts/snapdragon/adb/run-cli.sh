@@ -2,7 +2,7 @@
 #
 
 # Basedir on device
-basedir=/data/local/tmp/llama.cpp
+basedir=/data/local/tmp/xujia/llama.cpp
 
 cli_opts=
 

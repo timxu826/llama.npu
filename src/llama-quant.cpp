@@ -4,14 +4,30 @@
 #include "llama-model-loader.h"
 
 #include <algorithm>
-#include <cmath>
-#include <cstring>
+#include <array>
+#include <cassert>
 #include <cinttypes>
+#include <cstdint>
+#include <cstring>
 #include <fstream>
+#include <iterator>
+#include <map>
 #include <mutex>
+#include <numeric>
 #include <regex>
+#include <string>
 #include <thread>
-#include <unordered_map>
+#include <vector>
+#include <sys/stat.h>
+
+struct llama_model;
+
+// HVX repack functions for Hexagon NPU backend (defined in ggml-quants.c)
+extern "C" {
+void repack_q4_0_super_block_hvx(const void * src, void * dst, size_t size);
+void repack_q8_0_super_block_hvx(const void * src, void * dst, size_t size);
+void repack_iq4_nl_super_block_hvx(const void * src, void * dst, size_t size);
+}
 
 // Quantization types. Changes to this struct must be replicated in quantize.cpp
 struct tensor_quantization {
@@ -378,7 +394,51 @@ static ggml_type llama_tensor_get_type(quantize_state_impl & qs, ggml_type new_t
             new_type = ftype == LLAMA_FTYPE_MOSTLY_Q4_0 ? GGML_TYPE_Q4_1 : GGML_TYPE_Q5_1;
         }
         ++qs.i_ffn_down;
-    } else if (name.find("attn_output.weight") != std::string::npos) {
+    }
+    // HMX/HVX mixed quantization types
+    else if (ftype == LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_F16) {
+        if (name.find("attn_v.weight") != std::string::npos) {
+            new_type = GGML_TYPE_F16;
+        }
+        else if (name.find("ffn_down") != std::string::npos) {
+            new_type = GGML_TYPE_F16;
+        }
+        else if (name.find("attn_output.weight") != std::string::npos) {
+            new_type = GGML_TYPE_Q6_K;
+        }
+        else if (name == "token_embd.weight" || name == "output.weight") {
+            new_type = GGML_TYPE_Q6_K;
+        }
+    }
+    else if (ftype == LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_Q8_0) {
+        if (name.find("attn_v.weight") != std::string::npos) {
+            new_type = GGML_TYPE_Q8_0;
+        }
+        else if (name.find("ffn_down") != std::string::npos) {
+            new_type = GGML_TYPE_Q8_0;
+        }
+        else if (name.find("attn_output.weight") != std::string::npos) {
+            new_type = GGML_TYPE_Q6_K;
+        }
+        else if (name == "token_embd.weight" || name == "output.weight") {
+            new_type = GGML_TYPE_Q6_K;
+        }
+    }
+    else if (ftype == LLAMA_FTYPE_MOSTLY_MIXED_IQ4_NL_Q8_0) {
+        if (name.find("attn_v.weight") != std::string::npos) {
+            new_type = GGML_TYPE_Q8_0;
+        }
+        else if (name.find("ffn_down") != std::string::npos) {
+            new_type = GGML_TYPE_Q8_0;
+        }
+        else if (name.find("attn_output.weight") != std::string::npos) {
+            new_type = GGML_TYPE_Q6_K;
+        }
+        else if (name == "token_embd.weight" || name == "output.weight") {
+            new_type = GGML_TYPE_Q6_K;
+        }
+    }
+    else if (name.find("attn_output.weight") != std::string::npos) {
         if (arch != LLM_ARCH_FALCON) {
             if (qs.model.hparams.n_expert == 8) {
                 if (ftype == LLAMA_FTYPE_MOSTLY_Q2_K   || ftype == LLAMA_FTYPE_MOSTLY_IQ3_XS || ftype == LLAMA_FTYPE_MOSTLY_IQ3_XXS ||
@@ -572,8 +632,15 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
         case LLAMA_FTYPE_MOSTLY_IQ3_S:   default_type = GGML_TYPE_IQ3_S;   break;
         case LLAMA_FTYPE_MOSTLY_IQ3_M:   default_type = GGML_TYPE_IQ3_S;   break;
 
+        // HMX/HVX mixed quantization types
+        case LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_F16:    default_type = GGML_TYPE_Q4_0;   break;
+        case LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_Q8_0:   default_type = GGML_TYPE_Q4_0;   break;
+        case LLAMA_FTYPE_MOSTLY_MIXED_IQ4_NL_Q8_0: default_type = GGML_TYPE_IQ4_NL; break;
+
         default: throw std::runtime_error(format("invalid output file type %d\n", ftype));
     }
+
+    bool repack_for_hvx = getenv("REPACK_FOR_HVX") != nullptr;
 
     int nthread = params->nthread;
 
@@ -1030,9 +1097,23 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
 #endif
             }
             LLAMA_LOG_INFO("size = %8.2f MiB -> %8.2f MiB\n", ggml_nbytes(tensor)/1024.0/1024.0, new_size/1024.0/1024.0);
+        
+            // NOTE(hzx): reorder blocks for HVX dequantize implementation
+            if (repack_for_hvx) {
+                if ((ftype == LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_F16 || ftype == LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_Q8_0) 
+                    && new_type == GGML_TYPE_Q4_0) {
+                    repack_q4_0_super_block_hvx(new_data, new_data, new_size);
+                }
+                if ((ftype == LLAMA_FTYPE_MOSTLY_MIXED_Q4_0_Q8_0 || ftype == LLAMA_FTYPE_MOSTLY_MIXED_IQ4_NL_Q8_0) 
+                    && new_type == GGML_TYPE_Q8_0 
+                    && name != "token_embd.weight" && name != "output.weight") {
+                    repack_q8_0_super_block_hvx(new_data, new_data, new_size);
+                }
+                if (ftype == LLAMA_FTYPE_MOSTLY_MIXED_IQ4_NL_Q8_0 && new_type == GGML_TYPE_IQ4_NL) {
+                    repack_iq4_nl_super_block_hvx(new_data, new_data, new_size);
+                }
+            }
         }
-        total_size_org += ggml_nbytes(tensor);
-        total_size_new += new_size;
 
         // update the gguf meta data as we go
         gguf_set_tensor_type(ctx_outs[cur_split].get(), name.c_str(), new_type);

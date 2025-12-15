@@ -2,7 +2,7 @@
 #
 
 # Basedir on device
-basedir=/data/local/tmp/llama.cpp
+basedir=/data/local/tmp/xujia/llama.cpp
 
 branch=.
 [ "$B" != "" ] && branch=$B
@@ -10,7 +10,7 @@ branch=.
 adbserial=
 [ "$S" != "" ] && adbserial="-s $S"
 
-model="Llama-3.2-3B-Instruct-Q4_0.gguf"
+model="Llama-3.2-1B-Instruct-Q4_0.gguf"
 [ "$M" != "" ] && model="$M"
 
 device="HTP0"

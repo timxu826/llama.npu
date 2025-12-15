@@ -3008,6 +3008,11 @@ class LlamaFileType(IntEnum):
     MOSTLY_TQ1_0         = 36  # except 1d tensors
     MOSTLY_TQ2_0         = 37  # except 1d tensors
 
+    # HMX/HVX mixed quantization types for Hexagon NPU
+    MOSTLY_MIXED_Q4_0_F16    = 512  # except 1d tensors + token embed + lm_head, mixed q4_0 and f16
+    MOSTLY_MIXED_Q4_0_Q8_0   = 513  # except 1d tensors + token embed + lm_head, mixed q4_0 and q8_0
+    MOSTLY_MIXED_IQ4_NL_Q8_0 = 514  # except 1d tensors + token embed + lm_head, mixed iq4_nl and q8_0
+
     GUESSED              = 1024  # not specified in the model file
 
 

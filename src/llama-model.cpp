@@ -2131,6 +2131,7 @@ void llama_model::load_hparams(llama_model_loader & ml) {
     pimpl->n_bytes = ml.n_bytes;
 
     pimpl->desc_str = arch_name() + " " + type_name() + " " + ml.ftype_name();
+    LLAMA_LOG_INFO("%s: detected model type: %s\n", __func__, pimpl->desc_str.c_str());
 
     if (hparams.f_max_alibi_bias > 0.0f) {
         hparams.use_alibi = true;
