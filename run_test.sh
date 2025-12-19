@@ -12,9 +12,11 @@ persona=xujia
 basedir=/data/local/tmp/$persona/llama.cpp-npu
 htp_ops_lib_dir=/data/local/tmp/$persona/htp-ops-lib
 hexagon_tool_dir=$htp_ops_lib_dir/hexagon_ReleaseG_toolv19_v75
+android_release_dir=$htp_ops_lib_dir/android_ReleaseG_aarch64
 
 htp_path=/data/local/tmp/$persona/llama.cpp/./lib
 
+adb shell "cp $android_release_dir/*.so $htp_path/"
 adb shell "cp $hexagon_tool_dir/* $htp_path/"
     
 

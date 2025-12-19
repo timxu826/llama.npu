@@ -71,6 +71,20 @@ void RpcMemMapper::validate(const ggml_tensor * dst) {
             continue;
         }
 
+        // Skip if buffer is already mapped by Hexagon backend (HVX path)
+        // This avoids double-mapping which causes fastrpc_mmap error 0x1a
+        if (ggml_backend_hexagon_buffer_is_mapped(buf)) {
+            int fd = rpcmem_to_fd(buf_base);
+            if (fd >= 0) {
+                // Record the mapping so we track it (but don't actually map)
+                accessed_bufs.push_front(buf_base);
+                buf_iters[buf_base]   = accessed_bufs.begin();
+                buf_mapping[buf_base] = { fd, buf_size };
+                active_map_size += buf_size;
+            }
+            continue;
+        }
+
         int fd = rpcmem_to_fd(buf_base);
         if (fd < 0) {
             GGML_ABORT("rpcmem_to_fd returns %d, ptr %p, for dst tensor %s, n_ops %d\n", fd, buf_base, dst->name,

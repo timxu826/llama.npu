@@ -17,6 +17,10 @@
 #include "dsprpc_interface.h"
 #include "rpcmem_mapper.h"
 
+// External atomic variables for HMX dspqueue response handling
+extern std::atomic<int> hmx_pending_ops;
+extern std::atomic<int> hmx_last_result;
+
 namespace {
 
 auto get_all_rpcmem_mappings(const ggml_tensor * dst, ggml_hexagon_context * ctx) {
@@ -270,101 +274,90 @@ int htp_ops_compute_op(struct ggml_tensor * dst) {
             break;
     }
 
-    // TODO: make sure only one thread can arrive here
-    int  n_reqs         = 1;
-    int  n_unmap_fds    = ctx->hmx_mapper->get_pending_unmap_reqs().size();
-    bool has_unmap_reqs = n_unmap_fds > 0;
-    if (has_unmap_reqs) {
-        ++n_reqs;
+    // Build packet for dspqueue
+    // Packet format: HmxPacketHeader + RequestHeader + OpComputeRequest + params
+    
+    struct HmxPacketHeader {
+        int32_t n_reqs;
+        int32_t reserved;
+    } __attribute__((packed));
+    
+    uint8_t packet_buf[4096];
+    uint8_t * p = packet_buf;
+    
+    // Write packet header
+    HmxPacketHeader pkt_hdr{
+        .n_reqs = 1,
+        .reserved = 0,
+    };
+    write_buf(p, pkt_hdr);
+    
+    // Write request header
+    RequestHeader req_hdr{
+        .state = 0,
+        .type  = REQUEST_TYPE_OP_COMPUTE,
+    };
+    write_buf(p, req_hdr);
+    
+    // Write op compute request
+    OpComputeRequest op_req{
+        .op = (uint32_t) op_index,
+    };
+    write_buf(p, op_req);
+    
+    // Write op parameters
+    write_buf(p, param_buf, args_size);
+    
+    size_t packet_size = p - packet_buf;
+    
+    // Get dspqueue handle from library
+    using get_hmx_dspqueue_fn_type = void*();
+    auto get_hmx_dspqueue = reinterpret_cast<get_hmx_dspqueue_fn_type *>(
+        dlsym(ctx->ops_dl_handle, "get_hmx_dspqueue"));
+    
+    if (!get_hmx_dspqueue) {
+        fprintf(stderr, "HMX: get_hmx_dspqueue not found\n");
+        return -1;
     }
-
-    size_t op_req_size = sizeof(RequestHeader) + sizeof(OpComputeRequest) + args_size;
-
-    auto * msg_hdr = reinterpret_cast<MessageHeader *>(ctx->ops_msg_chan);
-
-    // FIXME: this is very ugly
-    auto * d_ptr = reinterpret_cast<volatile std::atomic<uint64_t> *>(&(msg_hdr->state.d));
-
-    // The memory order here is not very important
-    std::atomic_store(d_ptr, 0);
-
-    msg_hdr->n_reqs         = n_reqs;
-    msg_hdr->req_offsets[0] = message_header_size(msg_hdr);
-    msg_hdr->req_offsets[1] = msg_hdr->req_offsets[0] + op_req_size;
-
-    {
-        RequestHeader req_hdr{
-            .state = 0,
-            .type  = REQUEST_TYPE_OP_COMPUTE,
-        };
-        OpComputeRequest op_req{
-            .op = (uint32_t) op_index,
-        };
-
-        auto * p = reinterpret_cast<uint8_t *>(message_header_get_request_ptr(msg_hdr, 0));
-        write_buf(p, req_hdr);
-        write_buf(p, op_req);
-        write_buf(p, param_buf, args_size);
+    
+    void * queue = get_hmx_dspqueue();
+    if (!queue) {
+        fprintf(stderr, "HMX: dspqueue not initialized\n");
+        return -1;
     }
-
-    if (has_unmap_reqs) {
-        size_t map_req_size     = sizeof(RequestHeader) + sizeof(RpcmemMapRequest) + n_unmap_fds * sizeof(int32_t);
-        msg_hdr->req_offsets[2] = msg_hdr->req_offsets[1] + map_req_size;
-
-        RequestHeader req_hdr{
-            .state = 0,
-            .type  = REQUEST_TYPE_RPCMEM_MAP,
-        };
-        RpcmemMapRequest map_req{
-            .n_puts = n_unmap_fds,
-            .n_gets = 0,
-        };
-
-        auto * p = reinterpret_cast<uint8_t *>(message_header_get_request_ptr(msg_hdr, 1));
-        write_buf(p, req_hdr);
-        write_buf(p, map_req);
-        for (const auto & [fd, _base, _len] : ctx->hmx_mapper->get_pending_unmap_reqs()) {
-            write_buf(p, fd);
-        }
+    
+    // Get dspqueue_write function
+    using dspqueue_write_fn_type = int(void*, uint32_t, uint32_t, void*, uint32_t, const uint8_t*, uint32_t);
+    auto dspqueue_write = reinterpret_cast<dspqueue_write_fn_type *>(
+        dlsym(ctx->ops_dl_handle, "dspqueue_write"));
+    
+    if (!dspqueue_write) {
+        fprintf(stderr, "HMX: dspqueue_write not found\n");
+        return -1;
     }
-
-    // compute checksum
-    if (1) {
-        uint32_t   sum   = 0;
-        uint32_t * begin = ((uint32_t *) msg_hdr) + 3;  // skip state & checksum
-        uint32_t * end   = ((uint32_t *) msg_hdr) + ctx->max_msg_size / 4;
-
-        for (auto * p = begin; p < end; ++p) {
-            sum += *p;
-        }
-        sum += 0x00000001 + 0x00000000;  // value of `state`
-
-        msg_hdr->checksum = -sum;
-    } else {
-#ifdef __aarch64__
-        asm volatile("dmb sy" ::: "memory");
-#endif
+    
+    // Increment pending ops counter
+    hmx_pending_ops.fetch_add(1);
+    
+    // Send request via dspqueue
+    int err = dspqueue_write(queue, 0, 0, nullptr, packet_size, packet_buf, 1000000);  // 1 second timeout
+    if (err != 0) {
+        fprintf(stderr, "HMX: dspqueue_write failed: 0x%x\n", err);
+        hmx_pending_ops.fetch_sub(1);
+        return -1;
     }
-
-    // issue request
-    auto * v0_ptr = reinterpret_cast<volatile std::atomic<uint8_t> *>(&(msg_hdr->state.v[0]));
-    auto * v1_ptr = reinterpret_cast<volatile std::atomic<uint8_t> *>(&(msg_hdr->state.v[1]));
-
-    // NOTE: make sure memory_order_release is used here to ensure all previous writes are valid
-    std::atomic_store_explicit(v0_ptr, 1, std::memory_order_release);
-
-    // poll for response
-    while (std::atomic_load_explicit(v1_ptr, std::memory_order_acquire) == 0) {
-        // TODO: use cpu_relax here
+    
+    // Wait for response (poll pending ops counter)
+    while (hmx_pending_ops.load() > 0) {
         usleep(1);
     }
-    d_ptr->store(0, std::memory_order_relaxed);
-
-    if (has_unmap_reqs) {
+    
+    // Handle pending unmap requests
+    int n_unmap_fds = ctx->hmx_mapper->get_pending_unmap_reqs().size();
+    if (n_unmap_fds > 0) {
         ctx->hmx_mapper->unmap_all_pending_buffers();
     }
-
-    std::atomic_thread_fence(std::memory_order_acquire);
-    return message_header_get_request_ptr(msg_hdr, 0)->state;
+    
+    return hmx_last_result.load();
 }
 }

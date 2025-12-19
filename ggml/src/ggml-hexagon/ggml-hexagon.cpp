@@ -214,6 +214,12 @@ static inline void hex_format_op_names(char * str, const struct ggml_tensor * t)
 
 // ** backend sessions
 
+// Forward declaration
+struct ggml_hexagon_session;
+
+// Global pointer to first session for HMX to reuse its handle
+static ggml_hexagon_session * g_first_session = nullptr;
+
 struct ggml_hexagon_session {
     ggml_hexagon_session(int dev_id) noexcept(false);
     ~ggml_hexagon_session() noexcept(true);
@@ -240,6 +246,14 @@ struct ggml_hexagon_session {
     uint32_t         prof_cycles;
     uint32_t         prof_pkts;
 };
+
+// Get the FastRPC handle from the first HVX session (for HMX to reuse)
+extern "C" uint64_t ggml_hexagon_get_session_handle() {
+    if (g_first_session && g_first_session->valid_handle) {
+        return (uint64_t)g_first_session->handle;
+    }
+    return 0;
+}
 
 // Packet callback
 static void htp_packet_callback(dspqueue_t queue, AEEResult error, void * context) {
@@ -392,6 +406,15 @@ struct ggml_backend_hexagon_buffer_context {
 
 static ggml_hexagon_session * ggml_backend_hexagon_buffer_get_sess(ggml_backend_buffer_t buffer) {
     return static_cast<ggml_backend_hexagon_buffer_type_context *>(buffer->buft->context)->sess;
+}
+
+// Check if a hexagon buffer is already mapped to DSP (for HMX rpcmem_mapper)
+extern "C" bool ggml_backend_hexagon_buffer_is_mapped(ggml_backend_buffer_t buffer) {
+    if (buffer == nullptr || buffer->context == nullptr) {
+        return false;
+    }
+    auto ctx = static_cast<ggml_backend_hexagon_buffer_context *>(buffer->context);
+    return ctx->mapped;
 }
 
 static void ggml_backend_hexagon_buffer_free_buffer(ggml_backend_buffer_t buffer) {
@@ -2175,7 +2198,16 @@ static void ggml_hexagon_mul_mat(const struct ggml_tensor * op, uint32_t flags) 
 
     // Check if HMX ops should handle this operation
     auto * hmx_ctx = ggml_hexagon_get_context();
-    if (hmx_ctx && hmx_ctx->hmx_ops_enabled && htp_ops_support_op(dst)) {
+    // if (hmx_ctx && hmx_ctx->hmx_ops_enabled && htp_ops_support_op(dst)) {
+    if(0) {
+        // Wait for any pending HVX/dspqueue operations to complete before HMX
+        // This prevents DSP resource conflicts between HMX message channel and dspqueue
+        auto src0_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src0->buffer->context);
+        auto sess = src0_buf->sess;
+        while (sess->op_pending) {
+            ; // spin wait for pending HVX ops
+        }
+
         // Use HMX implementation
         int ret = htp_ops_compute_op(const_cast<ggml_tensor *>(dst));
         if (ret == 0) {
@@ -3160,7 +3192,7 @@ static ggml_status ggml_backend_hexagon_graph_compute(ggml_backend_t backend, gg
         if (i == last) {
             flags |= HTP_OPFLAGS_EARLY_WAKEUP;
         }
-
+        printf("ggml-hex: graph-compute processing node %d/%d: %s\n", i + 1, graph->n_nodes, node->name);
         switch (node->op) {
             case GGML_OP_MUL_MAT:
                 printf("ggml-hex: graph-compute MUL_MAT node %s\n", node->name);
@@ -3646,7 +3678,12 @@ ggml_hexagon_registry::ggml_hexagon_registry(ggml_backend_reg_t reg) {
         devices[i].iface   = ggml_backend_hexagon_device_i;
         devices[i].reg     = reg;
         try {
-            devices[i].context = new ggml_hexagon_session(i);
+            auto sess = new ggml_hexagon_session(i);
+            devices[i].context = sess;
+            // Store first session for HMX to reuse its handle
+            if (i == 0 && sess->valid_handle) {
+                g_first_session = sess;
+            }
         } catch (std::exception const &exc) {
             GGML_LOG_ERROR("ggml-hex: failed to create device/session %zu\n", i);
             devices[i].context = nullptr;
