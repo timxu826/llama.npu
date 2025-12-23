@@ -19,6 +19,8 @@ htp_path=/data/local/tmp/$persona/llama.cpp/./lib
 adb shell "cp $android_release_dir/*.so $htp_path/"
 adb shell "cp $hexagon_tool_dir/* $htp_path/"
     
+adb shell "touch $htp_path/htp_ops_test.farf"
+adb shell "logcat -c"
 
 adb shell    "cd /data/local/tmp/$persona/llama.cpp; ulimit -c unlimited;                   \
         REPACK_FOR_HVX=1                                                                    \
