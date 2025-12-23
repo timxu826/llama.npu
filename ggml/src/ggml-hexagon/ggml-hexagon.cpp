@@ -40,7 +40,7 @@
 
 // HMX ops support
 #include "ggml-hexagon-hmx.h"
-#include "htp-ops.h"
+
 
 static size_t opt_ndev         = 1;
 static size_t opt_nhvx         = 0;  // use all
@@ -214,12 +214,6 @@ static inline void hex_format_op_names(char * str, const struct ggml_tensor * t)
 
 // ** backend sessions
 
-// Forward declaration
-struct ggml_hexagon_session;
-
-// Global pointer to first session for HMX to reuse its handle
-static ggml_hexagon_session * g_first_session = nullptr;
-
 struct ggml_hexagon_session {
     ggml_hexagon_session(int dev_id) noexcept(false);
     ~ggml_hexagon_session() noexcept(true);
@@ -246,14 +240,6 @@ struct ggml_hexagon_session {
     uint32_t         prof_cycles;
     uint32_t         prof_pkts;
 };
-
-// Get the FastRPC handle from the first HVX session (for HMX to reuse)
-extern "C" uint64_t ggml_hexagon_get_session_handle() {
-    if (g_first_session && g_first_session->valid_handle) {
-        return (uint64_t)g_first_session->handle;
-    }
-    return 0;
-}
 
 // Packet callback
 static void htp_packet_callback(dspqueue_t queue, AEEResult error, void * context) {
@@ -406,15 +392,6 @@ struct ggml_backend_hexagon_buffer_context {
 
 static ggml_hexagon_session * ggml_backend_hexagon_buffer_get_sess(ggml_backend_buffer_t buffer) {
     return static_cast<ggml_backend_hexagon_buffer_type_context *>(buffer->buft->context)->sess;
-}
-
-// Check if a hexagon buffer is already mapped to DSP (for HMX rpcmem_mapper)
-extern "C" bool ggml_backend_hexagon_buffer_is_mapped(ggml_backend_buffer_t buffer) {
-    if (buffer == nullptr || buffer->context == nullptr) {
-        return false;
-    }
-    auto ctx = static_cast<ggml_backend_hexagon_buffer_context *>(buffer->context);
-    return ctx->mapped;
 }
 
 static void ggml_backend_hexagon_buffer_free_buffer(ggml_backend_buffer_t buffer) {
@@ -2196,28 +2173,6 @@ static void ggml_hexagon_mul_mat(const struct ggml_tensor * op, uint32_t flags) 
     const struct ggml_tensor * src1 = op->src[1];
     const struct ggml_tensor * dst  = op;
 
-    // Check if HMX ops should handle this operation
-    auto * hmx_ctx = ggml_hexagon_get_context();
-    // if (hmx_ctx && hmx_ctx->hmx_ops_enabled && htp_ops_support_op(dst)) {
-    if(0) {
-        // Wait for any pending HVX/dspqueue operations to complete before HMX
-        // This prevents DSP resource conflicts between HMX message channel and dspqueue
-        auto src0_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src0->buffer->context);
-        auto sess = src0_buf->sess;
-        while (sess->op_pending) {
-            ; // spin wait for pending HVX ops
-        }
-
-        // Use HMX implementation
-        int ret = htp_ops_compute_op(const_cast<ggml_tensor *>(dst));
-        if (ret == 0) {
-            return; // HMX ops handled successfully
-        }
-        // Fall through to HVX if HMX failed
-        GGML_LOG_WARN("ggml-hex: HMX ops failed for %s, falling back to HVX\n", dst->name);
-    }
-
-    // Continue with HVX implementation
     auto src0_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src0->buffer->context);
     auto src1_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src1->buffer->context);
     auto dst_buf  = static_cast<ggml_backend_hexagon_buffer_context *>(dst->buffer->context);
@@ -3678,12 +3633,7 @@ ggml_hexagon_registry::ggml_hexagon_registry(ggml_backend_reg_t reg) {
         devices[i].iface   = ggml_backend_hexagon_device_i;
         devices[i].reg     = reg;
         try {
-            auto sess = new ggml_hexagon_session(i);
-            devices[i].context = sess;
-            // Store first session for HMX to reuse its handle
-            if (i == 0 && sess->valid_handle) {
-                g_first_session = sess;
-            }
+            devices[i].context = new ggml_hexagon_session(i);
         } catch (std::exception const &exc) {
             GGML_LOG_ERROR("ggml-hex: failed to create device/session %zu\n", i);
             devices[i].context = nullptr;
@@ -3777,12 +3727,6 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_hostbuf = str_hostbuf ? atoi(str_hostbuf) : 1;
 
     reg->context = new ggml_hexagon_registry(reg);
-
-    // Initialize HMX ops context (singleton)
-    // This will load the HMX ops library if GGML_HEXAGON_ENABLE_HMX=1
-    // print the execution of this function
-    printf("Executing ggml_hexagon_get_context\n");
-    ggml_hexagon_get_context();
 
     HEX_VERBOSE("ggml-hex: size-of-general-req %zu size-of-general-rsp %zu\n", sizeof(struct htp_general_req),
                 sizeof(struct htp_general_rsp));
