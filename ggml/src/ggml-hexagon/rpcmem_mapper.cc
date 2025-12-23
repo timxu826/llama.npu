@@ -185,12 +185,9 @@ void RpcMemMapper::dump_state() const {
 extern "C" {
 
 int prepare_tensor_rpcmem_mapping(const struct ggml_tensor * dst) {
-    // This will be called from HMX ops interface
-    // The mapper is stored in ggml_hexagon_context
-    ggml_hexagon_context * ctx = ggml_hexagon_get_context();
-    if (ctx && ctx->hmx_mapper) {
-        ctx->hmx_mapper->validate(dst);
-    }
+    // HMX is now integrated into HVX backend - no separate mapper needed
+    // The HVX backend already handles rpcmem mapping for all tensors
+    (void)dst;
     return 0;
 }
 }

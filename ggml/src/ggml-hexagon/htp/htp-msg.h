@@ -56,6 +56,9 @@ enum htp_op {
     HTP_OP_SOFTMAX        = 10,
     HTP_OP_ADD_ID         = 11,
     HTP_OP_ROPE           = 12,
+    // HMX operations (use HMX accelerator instead of HVX)
+    HTP_OP_HMX_MUL_MAT    = 100,
+    HTP_OP_HMX_MUL_MAT_ID = 101,
     INVALID
 };
 

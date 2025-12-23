@@ -25,6 +25,8 @@
 #include "htp-dma.h"
 #include "htp-msg.h"
 #include "htp-ops.h"
+#include "hmx-mgr.h"
+#include "hmx-matmul-ops.h"
 #include "ops-utils.h"
 #include "worker-pool.h"
 
@@ -303,6 +305,13 @@ AEEResult htp_iface_start(remote_handle64 handle, uint32 sess_id, uint64 dsp_que
     FARF(HIGH, "session %u started: n-hvx %u vtcm-size %zu vtcm-rctx %u n-threads %u thread-id %d thread-prio %d \n",
          sess_id, hw_nhvx, ctx->vtcm_size, ctx->vtcm_rctx, ctx->n_threads, ctx->thread_id, ctx->thread_prio);
 
+    // Initialize HMX manager (optional - won't fail if HMX not available)
+    if (hmx_manager_setup() == 0) {
+        FARF(HIGH, "HMX manager initialized successfully");
+    } else {
+        FARF(HIGH, "HMX not available, continuing with HVX only");
+    }
+
     return AEE_SUCCESS;
 }
 
@@ -316,6 +325,9 @@ AEEResult htp_iface_stop(remote_handle64 handle) {
         FARF(ERROR, "Queue not open");
         return AEE_EBADSTATE;
     }
+
+    // Release HMX manager
+    hmx_manager_reset();
 
     // Close queue. dspqueue_close() will also wait for callbacks to finish.
     int err    = dspqueue_close(ctx->queue);
@@ -440,6 +452,70 @@ static void proc_matmul_req(struct htp_context *     ctx,
     uint32_t rsp_status = HTP_STATUS_INTERNAL_ERR;
     if (vtcm_acquire(ctx) == AEE_SUCCESS) {
         rsp_status = op_matmul(&octx);
+        vtcm_release(ctx);
+    }
+
+    profile_stop(&prof);
+    send_htp_rsp(ctx, req->op, rsp_status, rsp_bufs, 3, &prof);
+}
+
+// HMX matmul request handler
+static void proc_hmx_matmul_req(struct htp_context *     ctx,
+                                struct htp_general_req * req,
+                                struct dspqueue_buffer * bufs,
+                                size_t                   n_bufs) {
+    (void)n_bufs;
+
+    // Prep response buffer structs
+    struct dspqueue_buffer rsp_bufs[HTP_MAX_PACKET_BUFFERS];
+    memset(rsp_bufs, 0, sizeof(rsp_bufs));
+    rsp_bufs[0].fd     = bufs[0].fd;
+    rsp_bufs[0].ptr    = bufs[0].ptr;
+    rsp_bufs[0].size   = bufs[0].size;
+    rsp_bufs[0].offset = bufs[0].offset;
+    rsp_bufs[0].flags  = DSPQUEUE_BUFFER_FLAG_DEREF;
+
+    rsp_bufs[1].fd     = bufs[1].fd;
+    rsp_bufs[1].ptr    = bufs[1].ptr;
+    rsp_bufs[1].size   = bufs[1].size;
+    rsp_bufs[1].offset = bufs[1].offset;
+    rsp_bufs[1].flags  = DSPQUEUE_BUFFER_FLAG_DEREF;
+
+    rsp_bufs[2].fd     = bufs[2].fd;
+    rsp_bufs[2].ptr    = bufs[2].ptr;
+    rsp_bufs[2].size   = bufs[2].size;
+    rsp_bufs[2].offset = bufs[2].offset;
+    rsp_bufs[2].flags  = (DSPQUEUE_BUFFER_FLAG_DEREF |
+                         DSPQUEUE_BUFFER_FLAG_FLUSH_SENDER |
+                         DSPQUEUE_BUFFER_FLAG_INVALIDATE_RECIPIENT);
+
+    struct profile_data prof;
+    profile_start(&prof);
+
+    uint32_t rsp_status = HTP_STATUS_INTERNAL_ERR;
+
+    // Extract tensor info
+    struct htp_tensor * src0 = &req->src0;  // weight (FP16)
+    struct htp_tensor * src1 = &req->src1;  // activation (FP32)
+
+    // Get dimensions: dst[m,n] = src1[m,k] * src0[k,n]^T
+    int m = src1->ne[1];  // activation rows
+    int k = src0->ne[0];  // weight/activation inner dim
+    int n = src0->ne[1];  // weight cols (output cols)
+
+    float   * dst_ptr  = (float *)bufs[2].ptr;
+    float   * src1_ptr = (float *)bufs[1].ptr;
+    __fp16  * src0_ptr = (__fp16 *)bufs[0].ptr;
+
+    if (vtcm_acquire(ctx) == AEE_SUCCESS) {
+        int err = hmx_matmul_fp16_weight(dst_ptr, src1_ptr, src0_ptr, 
+                                          m, k, n, 
+                                          ctx->vtcm_base, ctx->vtcm_size);
+        if (err == 0) {
+            rsp_status = HTP_STATUS_OK;
+        } else {
+            FARF(ERROR, "HMX matmul failed: m=%d k=%d n=%d err=%d", m, k, n, err);
+        }
         vtcm_release(ctx);
     }
 
@@ -935,6 +1011,32 @@ static void htp_packet_callback(dspqueue_t queue, int error, void * context) {
                     continue;
                 }
                 proc_rope_req(ctx, &req, bufs, n_bufs);
+                break;
+
+            case HTP_OP_HMX_MUL_MAT:
+                if (n_bufs != 3) {
+                    FARF(ERROR, "Bad hmx-matmul-req buffer list");
+                    continue;
+                }
+                // Use HMX matmul if available, otherwise fall back to HVX
+                if (hmx_is_available()) {
+                    proc_hmx_matmul_req(ctx, &req, bufs, n_bufs);
+                } else {
+                    FARF(HIGH, "HMX not available, falling back to HVX matmul");
+                    proc_matmul_req(ctx, &req, bufs, n_bufs);
+                }
+                break;
+
+            case HTP_OP_HMX_MUL_MAT_ID:
+                if (n_bufs != 4) {
+                    FARF(ERROR, "Bad hmx-matmul-id-req buffer list");
+                    continue;
+                }
+                // For now, fall back to HVX matmul_id - HMX implementation will be added later
+                if (hmx_is_available()) {
+                    FARF(HIGH, "HMX matmul_id requested - using HVX fallback for now");
+                }
+                proc_matmul_id_req(ctx, &req, bufs, n_bufs);
                 break;
 
             default:
