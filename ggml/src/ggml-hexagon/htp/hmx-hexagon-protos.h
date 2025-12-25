@@ -6,7 +6,8 @@
 #ifndef _HMX_HEXAGON_PROTOS_H_
 #define _HMX_HEXAGON_PROTOS_H_ 1
 
-#ifdef __HMX__
+// HMX is available on V75+
+#if defined(__HMX__) || defined(HEXAGON_ARCH_75) || defined(HEXAGON_ARCH_79) || defined(HEXAGON_ARCH_81)
 
 #define Q6_acc_mxshl_acc __builtin_HEXAGON_M8_mxaccshl
 #define Q6_mxclracc __builtin_HEXAGON_M8_mxclracc

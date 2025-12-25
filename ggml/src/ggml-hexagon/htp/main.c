@@ -75,6 +75,8 @@ AEEResult htp_iface_open(const char * uri, remote_handle64 * handle) {
         request.dcvs_v3.core_params.target_corner = HAP_DCVS_VCORNER_MAX;
         request.dcvs_v3.set_sleep_disable         = TRUE;
         request.dcvs_v3.sleep_disable             = TRUE;
+        request.dcvs_v3.set_latency               = TRUE;
+        request.dcvs_v3.latency                   = 100;  // microseconds
         if ((err = HAP_power_set((void *) ctx, &request)) != 0) {
             return err;
         }
@@ -146,6 +148,16 @@ AEEResult htp_iface_disable_etm(remote_handle64 handle) {
 
 static int vtcm_acquire(struct htp_context * ctx) {
     if (!ctx->vtcm_valid) {
+        FARF(ALWAYS, "Acquiring VTCM");
+        int err;
+        unsigned int            avail_size, total_size;
+        compute_res_vtcm_page_t avail_pages, total_pages;
+        err = HAP_compute_res_query_VTCM(0, &total_size, &total_pages, &avail_size, &avail_pages);
+        if (err) {
+            FARF(ALWAYS, "HAP_compute_res_query_VTCM failed with return code 0x%x", err);
+            return err;
+        }
+        FARF(ALWAYS, "available VTCM size: %d KiB, total VTCM size: %d KiB", avail_size / 1024, total_size / 1024);
         // Temporarily bump thread priority to make sure it's higher than other sessions.
         // This way the resource manager will notify the other thread to release VTCM.
         // Note that we need to reaquire VTCM at normal priority for this to work next time.
@@ -504,9 +516,30 @@ static void proc_hmx_matmul_req(struct htp_context *     ctx,
     int k = src0->ne[0];  // weight/activation inner dim
     int n = src0->ne[1];  // weight cols (output cols)
 
-    float   * dst_ptr  = (float *)bufs[2].ptr;
-    float   * src1_ptr = (float *)bufs[1].ptr;
-    __fp16  * src0_ptr = (__fp16 *)bufs[0].ptr;
+    // float   * dst_ptr  = (float *)bufs[2].ptr;
+    // float   * src1_ptr = (float *)bufs[1].ptr;
+    // __fp16  * src0_ptr = (__fp16 *)bufs[0].ptr;
+    float   * dst_ptr  = NULL;
+    float   * src1_ptr = NULL;
+    __fp16  * src0_ptr = NULL;
+
+    int err = HAP_mmap_get(bufs[0].fd, (void **) &src0_ptr, NULL);
+    if (err) {
+        FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+        goto bail;
+    }
+
+    err = HAP_mmap_get(bufs[1].fd, (void **) &src1_ptr, NULL);
+    if (err) {
+        FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+        goto bail;
+    }
+
+    err = HAP_mmap_get(bufs[2].fd, (void **) &dst_ptr, NULL);
+    if (err) {
+        FARF(ALWAYS, "HAP_mmap_get failed: %d", err);
+        goto bail;
+    }
 
     if (vtcm_acquire(ctx) == AEE_SUCCESS) {
         int err = hmx_matmul_fp16_weight(dst_ptr, src1_ptr, src0_ptr, 
@@ -518,6 +551,16 @@ static void proc_hmx_matmul_req(struct htp_context *     ctx,
             FARF(ALWAYS, "HMX matmul failed: m=%d k=%d n=%d err=%d", m, k, n, err);
         }
         vtcm_release(ctx);
+    }
+    bail:
+    if (dst_ptr) {
+        HAP_mmap_put(rsp_bufs[2].fd);
+    }
+    if (src1_ptr) {
+        HAP_mmap_put(rsp_bufs[1].fd);
+    }
+    if (src0_ptr) {
+        HAP_mmap_put(rsp_bufs[0].fd);
     }
 
     profile_stop(&prof);

@@ -5,7 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#ifdef __HMX__
+// HMX is available on V75+
+#if defined(__HMX__) || defined(HEXAGON_ARCH_75) || defined(HEXAGON_ARCH_79) || defined(HEXAGON_ARCH_81)
 #include "hmx-hexagon-protos.h"
 #endif
 
@@ -21,7 +22,8 @@
 
 #define HMX_INLINE_ALWAYS inline __attribute__((unused, always_inline))
 
-#ifdef __HMX__
+// HMX is available on V75+
+#if defined(__HMX__) || defined(HEXAGON_ARCH_75) || defined(HEXAGON_ARCH_79) || defined(HEXAGON_ARCH_81)
 
 static HMX_INLINE_ALWAYS void hmx_set_output_scales(const void *scales) {
   asm volatile("bias = mxmem2(%0)" ::"r"(scales));

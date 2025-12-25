@@ -32,7 +32,7 @@ add_library(${HTP_LIB} SHARED
     hmx-matmul-ops.c
 )
 
-target_compile_options(${HTP_LIB} PRIVATE -g)
+target_compile_options(${HTP_LIB} PRIVATE -g -mhmx)
 
 target_compile_definitions(${HTP_LIB} PRIVATE
     $<IF:$<BOOL:${HEXAGON_HTP_DEBUG}>,HTP_DEBUG=1,NDEBUG=1>)
