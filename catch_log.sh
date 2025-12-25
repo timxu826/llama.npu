@@ -1,0 +1,1 @@
+adb logcat -d > "htp_ops_test_all_$(date +%Y%m%d_%H%M%S).log"

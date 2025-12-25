@@ -1,7 +1,7 @@
 include(${HEXAGON_SDK_ROOT}/build/cmake/hexagon_fun.cmake)
 include(ExternalProject)
 
-option(GGML_HEXAGON_HTP_DEBUG "ggml-hexagon: enable HTP debug output" OFF)
+option(GGML_HEXAGON_HTP_DEBUG "ggml-hexagon: enable HTP debug output" ON)
 
 add_library(htp_iface OBJECT
     ${CMAKE_CURRENT_BINARY_DIR}/htp_iface_stub.c)
@@ -36,14 +36,9 @@ ggml_add_backend_library(${TARGET_NAME}
     # HMX ops support files
     ggml-hexagon-hmx.cpp
     ggml-hexagon-hmx.h
-    htp-ops.cc
-    htp-ops.h
-    rpcmem_mapper.cc
-    rpcmem_mapper.h
-    dsprpc_interface.cc
-    dsprpc_interface.h
-    message.h
-    op_reg.h)
+)
+
+target_compile_options(${TARGET_NAME} PRIVATE -O0 -g3 -fno-omit-frame-pointer -fno-inline)
 
 target_link_libraries(${TARGET_NAME} PRIVATE htp_iface)
 target_include_directories(${TARGET_NAME} PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/htp ${CMAKE_CURRENT_BINARY_DIR})

@@ -40,7 +40,7 @@
 
 // HMX ops support
 #include "ggml-hexagon-hmx.h"
-#include "htp-ops.h"
+
 
 static size_t opt_ndev         = 1;
 static size_t opt_nhvx         = 0;  // use all
@@ -68,6 +68,9 @@ static inline uint64_t hex_is_aligned(void * addr, uint32_t align) {
 static inline size_t hex_round_up(size_t n, size_t m) {
     return m * ((n + m - 1) / m);
 }
+
+// TODO: replace this fucking god damn shit into a header file.
+bool htp_ops_support_op(const struct ggml_tensor * dst);
 
 static const char * status_to_str(uint32_t status) {
     switch (status) {
@@ -2173,19 +2176,6 @@ static void ggml_hexagon_mul_mat(const struct ggml_tensor * op, uint32_t flags) 
     const struct ggml_tensor * src1 = op->src[1];
     const struct ggml_tensor * dst  = op;
 
-    // Check if HMX ops should handle this operation
-    auto * hmx_ctx = ggml_hexagon_get_context();
-    if (hmx_ctx && hmx_ctx->hmx_ops_enabled && htp_ops_support_op(dst)) {
-        // Use HMX implementation
-        int ret = htp_ops_compute_op(const_cast<ggml_tensor *>(dst));
-        if (ret == 0) {
-            return; // HMX ops handled successfully
-        }
-        // Fall through to HVX if HMX failed
-        GGML_LOG_WARN("ggml-hex: HMX ops failed for %s, falling back to HVX\n", dst->name);
-    }
-
-    // Continue with HVX implementation
     auto src0_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src0->buffer->context);
     auto src1_buf = static_cast<ggml_backend_hexagon_buffer_context *>(src1->buffer->context);
     auto dst_buf  = static_cast<ggml_backend_hexagon_buffer_context *>(dst->buffer->context);
@@ -2195,7 +2185,11 @@ static void ggml_hexagon_mul_mat(const struct ggml_tensor * op, uint32_t flags) 
 
     // Construct HTP message
     htp_general_req req;
-    req.op    = HTP_OP_MUL_MAT;
+    if (htp_ops_support_op(op)) {
+        req.op    = HTP_OP_HMX_MUL_MAT;
+    } else {
+        req.op    = HTP_OP_MUL_MAT;
+    }
     req.flags = flags;
 
     init_htp_tensor(&req.src0, src0);
@@ -3160,7 +3154,7 @@ static ggml_status ggml_backend_hexagon_graph_compute(ggml_backend_t backend, gg
         if (i == last) {
             flags |= HTP_OPFLAGS_EARLY_WAKEUP;
         }
-
+        printf("ggml-hex: graph-compute processing node %d/%d: %s\n", i + 1, graph->n_nodes, node->name);
         switch (node->op) {
             case GGML_OP_MUL_MAT:
                 printf("ggml-hex: graph-compute MUL_MAT node %s\n", node->name);
@@ -3491,6 +3485,70 @@ static ggml_backend_buffer_type_t ggml_backend_hexagon_device_get_repack_buffer_
     return &sess->repack_buffer_type;
 }
 
+bool htp_ops_support_op(const struct ggml_tensor * dst) {
+
+    switch (dst->op) {
+        case GGML_OP_MUL_MAT:
+            {
+                auto * weight     = dst->src[0];
+                auto * activation = dst->src[1];
+
+                size_t k = weight->ne[0];
+                size_t n = weight->ne[1];
+
+                bool shape_ok = k % 32 == 0 && n % 32 == 0 && ggml_nrows(dst) == dst->ne[1] &&
+                                ggml_nrows(activation) == activation->ne[1];
+
+                // FP16 weight
+                if (dst->type == GGML_TYPE_F32 && weight->type == GGML_TYPE_F16 && activation->type == GGML_TYPE_F32) {
+                    return shape_ok;
+                }
+                // (repacked) Q4_0 weight
+                if (dst->type == GGML_TYPE_F32 && weight->type == GGML_TYPE_Q4_0 && activation->type == GGML_TYPE_F32) {
+                    return shape_ok;
+                }
+                // (repacked) Q8_0 weight
+                if (dst->type == GGML_TYPE_F32 && weight->type == GGML_TYPE_Q8_0 && activation->type == GGML_TYPE_F32) {
+                    return shape_ok;
+                }
+                // (repacked) IQ4_NL weight
+                if (dst->type == GGML_TYPE_F32 && weight->type == GGML_TYPE_IQ4_NL &&
+                    activation->type == GGML_TYPE_F32) {
+                    return shape_ok;
+                }
+                fprintf(stderr, "unsupported matmul: dst: %s weight: %s act: %s\n", ggml_type_name(dst->type),
+                        ggml_type_name(weight->type), ggml_type_name(activation->type));
+                return false;
+            }
+        // case GGML_OP_FLASH_ATTN_EXT:
+        //     {
+        //         float scale         = *reinterpret_cast<const float *>(&dst->op_params[0]);
+        //         float max_bias      = *reinterpret_cast<const float *>(&dst->op_params[1]);
+        //         float logit_softcap = *reinterpret_cast<const float *>(&dst->op_params[2]);
+
+        //         auto * q    = dst->src[0];
+        //         auto * k    = dst->src[1];
+        //         auto * v    = dst->src[2];
+        //         auto * mask = dst->src[3];
+
+        //         auto print_tensor_info = [](const ggml_tensor * t) {
+        //             printf("%s: shape [%ld,%ld,%ld,%ld] type %s\n", t->name, t->ne[0], t->ne[1], t->ne[2], t->ne[3],
+        //                    ggml_type_name(t->type));
+        //         };
+        //         // print_tensor_info(dst);
+        //         // print_tensor_info(q);
+        //         // print_tensor_info(k);
+        //         // print_tensor_info(v);
+        //         // print_tensor_info(mask);
+
+        //         return dst->type == GGML_TYPE_F32 && q->type == GGML_TYPE_F32 && k->type == GGML_TYPE_F16 &&
+        //                v->type == GGML_TYPE_F16 && mask->type == GGML_TYPE_F16 && max_bias == 0 && logit_softcap == 0;
+        //     }
+        default:
+            return false;
+    }
+}
+
 static bool ggml_backend_hexagon_device_supports_op(ggml_backend_dev_t dev, const struct ggml_tensor * op) {
     auto sess = static_cast<ggml_hexagon_session *>(dev->context);
 
@@ -3507,6 +3565,7 @@ static bool ggml_backend_hexagon_device_supports_op(ggml_backend_dev_t dev, cons
 
         case GGML_OP_MUL_MAT:
             supp = ggml_hexagon_supported_mul_mat(sess, op);
+            supp |= htp_ops_support_op(op);
             break;
 
         case GGML_OP_MUL_MAT_ID:
@@ -3740,12 +3799,6 @@ static void ggml_hexagon_init(ggml_backend_reg * reg) {
     opt_hostbuf = str_hostbuf ? atoi(str_hostbuf) : 1;
 
     reg->context = new ggml_hexagon_registry(reg);
-
-    // Initialize HMX ops context (singleton)
-    // This will load the HMX ops library if GGML_HEXAGON_ENABLE_HMX=1
-    // print the execution of this function
-    printf("Executing ggml_hexagon_get_context\n");
-    ggml_hexagon_get_context();
 
     HEX_VERBOSE("ggml-hex: size-of-general-req %zu size-of-general-rsp %zu\n", sizeof(struct htp_general_req),
                 sizeof(struct htp_general_rsp));
