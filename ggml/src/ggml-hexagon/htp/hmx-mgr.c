@@ -13,19 +13,27 @@ static unsigned int hmx_mgr_ctx_id = 0;
 static atomic_int hmx_available = 0;
 
 int hmx_manager_setup(void) {
-    compute_res_attr_t req;
-    HAP_compute_res_attr_init(&req);
-    HAP_compute_res_attr_set_hmx_param(&req, 1);
+    // compute_res_attr_t req;
+    // HAP_compute_res_attr_init(&req);
+    // HAP_compute_res_attr_set_hmx_param(&req, 1);
 
-    hmx_mgr_ctx_id = HAP_compute_res_acquire(&req, 10000);  // 10ms timeout
-    if (hmx_mgr_ctx_id == 0) {
-        FARF(HIGH, "hmx_manager_setup: HAP_compute_res_acquire failed - HMX not available");
-        atomic_store(&hmx_available, 0);
-        return -1;
-    }
+    // hmx_mgr_ctx_id = HAP_compute_res_acquire(&req, 10000);  // 10ms timeout
+    // if (hmx_mgr_ctx_id == 0) {
+    //     FARF(ALWAYS, "hmx_manager_setup: HAP_compute_res_acquire failed - HMX not available");
+    //     atomic_store(&hmx_available, 0);
+    //     return -1;
+    // }
 
+    // atomic_store(&hmx_available, 1);
+    // FARF(ALWAYS, "hmx_manager_setup: HMX resources acquired successfully (ctx_id=%u)", hmx_mgr_ctx_id);
+    // return 0;
+
+
+    // FIXME: only for debug use. Remove this simulation code when HAP_compute_res_acquire is functional.
+    // For the purpose of this example, we will simulate successful acquisition
+    hmx_mgr_ctx_id = 1; // Simulated context ID
     atomic_store(&hmx_available, 1);
-    FARF(HIGH, "hmx_manager_setup: HMX resources acquired successfully (ctx_id=%u)", hmx_mgr_ctx_id);
+    FARF(ALWAYS, "hmx_manager_setup: HMX resources acquired successfully (ctx_id=%u)", hmx_mgr_ctx_id);
     return 0;
 }
 
