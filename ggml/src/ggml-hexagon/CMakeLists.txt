@@ -36,14 +36,7 @@ ggml_add_backend_library(${TARGET_NAME}
     # HMX ops support files
     ggml-hexagon-hmx.cpp
     ggml-hexagon-hmx.h
-    htp-ops.cc
-    htp-ops.h
-    rpcmem_mapper.cc
-    rpcmem_mapper.h
-    dsprpc_interface.cc
-    dsprpc_interface.h
-    message.h
-    op_reg.h)
+)
 
 target_compile_options(${TARGET_NAME} PRIVATE -O0 -g3 -fno-omit-frame-pointer -fno-inline)
 

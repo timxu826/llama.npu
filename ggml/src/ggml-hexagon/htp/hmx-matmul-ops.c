@@ -25,6 +25,6 @@ int hmx_matmul_fp16_weight(float *restrict dst, const float *restrict activation
     
     // Return -1 to signal fallback to HVX implementation
     // Full HMX implementation can be added later
-    FARF(HIGH, "HMX matmul not yet implemented, use HVX fallback");
+    FARF(ALWAYS, "HMX matmul not yet implemented, use HVX fallback");
     return -1;
 }

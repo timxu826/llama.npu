@@ -45,19 +45,3 @@ ggml_hexagon_context * ggml_hexagon_context::instance() {
     });
     return ctx_ptr.get();
 }
-
-// Buffer type check for rpcmem buffers
-extern "C" {
-bool ggml_backend_buft_is_hexagon_rpcmem(ggml_backend_buffer_type_t buft) {
-    // For now, assume all hexagon buffers can be used with rpcmem
-    // This may need refinement based on actual buffer type
-    if (buft == nullptr) {
-        return false;
-    }
-    const char * name = ggml_backend_buft_name(buft);
-    return name != nullptr && 
-           (strstr(name, "HTP") != nullptr ||      // Hexagon HTP buffers (HTP0, HTP1, HTP0-REPACK, etc.)
-            strstr(name, "Hexagon") != nullptr ||  // Alternative naming
-            strstr(name, "RPCMEM") != nullptr);    // Explicit rpcmem naming
-}
-}

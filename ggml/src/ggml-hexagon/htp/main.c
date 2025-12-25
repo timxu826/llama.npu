@@ -302,15 +302,15 @@ AEEResult htp_iface_start(remote_handle64 handle, uint32 sess_id, uint64 dsp_que
         return err;
     }
 
-    FARF(HIGH, "session %u started: n-hvx %u vtcm-size %zu vtcm-rctx %u n-threads %u thread-id %d thread-prio %d \n",
+    FARF(ALWAYS, "session %u started: n-hvx %u vtcm-size %zu vtcm-rctx %u n-threads %u thread-id %d thread-prio %d \n",
          sess_id, hw_nhvx, ctx->vtcm_size, ctx->vtcm_rctx, ctx->n_threads, ctx->thread_id, ctx->thread_prio);
 
     // Initialize HMX manager (optional - won't fail if HMX not available)
-    if (hmx_manager_setup() == 0) {
-        FARF(HIGH, "HMX manager initialized successfully");
-    } else {
-        FARF(HIGH, "HMX not available, continuing with HVX only");
-    }
+    // if (hmx_manager_setup() == 0) {
+    //     FARF(ALWAYS, "HMX manager initialized successfully");
+    // } else {
+    //     FARF(ALWAYS, "HMX not available, continuing with HVX only");
+    // }
 
     return AEE_SUCCESS;
 }
@@ -326,8 +326,8 @@ AEEResult htp_iface_stop(remote_handle64 handle) {
         return AEE_EBADSTATE;
     }
 
-    // Release HMX manager
-    hmx_manager_reset();
+    // // Release HMX manager
+    // hmx_manager_reset();
 
     // Close queue. dspqueue_close() will also wait for callbacks to finish.
     int err    = dspqueue_close(ctx->queue);
@@ -467,6 +467,7 @@ static void proc_hmx_matmul_req(struct htp_context *     ctx,
     (void)n_bufs;
 
     // Prep response buffer structs
+    FARF(ALWAYS, "config proc_hmx_matmul_req.");
     struct dspqueue_buffer rsp_bufs[HTP_MAX_PACKET_BUFFERS];
     memset(rsp_bufs, 0, sizeof(rsp_bufs));
     rsp_bufs[0].fd     = bufs[0].fd;
@@ -514,7 +515,7 @@ static void proc_hmx_matmul_req(struct htp_context *     ctx,
         if (err == 0) {
             rsp_status = HTP_STATUS_OK;
         } else {
-            FARF(ERROR, "HMX matmul failed: m=%d k=%d n=%d err=%d", m, k, n, err);
+            FARF(ALWAYS, "HMX matmul failed: m=%d k=%d n=%d err=%d", m, k, n, err);
         }
         vtcm_release(ctx);
     }
@@ -1014,27 +1015,37 @@ static void htp_packet_callback(dspqueue_t queue, int error, void * context) {
                 break;
 
             case HTP_OP_HMX_MUL_MAT:
+                FARF(ALWAYS, "execute HTP_OP_HMX_MUL_MAT.");
+                // Initialize HMX manager (optional - won't fail if HMX not available)
+                if (hmx_manager_setup() == 0) {
+                    FARF(ALWAYS, "HMX manager initialized successfully");
+                } else {
+                    FARF(ALWAYS, "HMX not available, continuing with HVX only");
+                }
                 if (n_bufs != 3) {
-                    FARF(ERROR, "Bad hmx-matmul-req buffer list");
+                    FARF(ALWAYS, "Bad hmx-matmul-req buffer list");
                     continue;
                 }
                 // Use HMX matmul if available, otherwise fall back to HVX
                 if (hmx_is_available()) {
                     proc_hmx_matmul_req(ctx, &req, bufs, n_bufs);
                 } else {
-                    FARF(HIGH, "HMX not available, falling back to HVX matmul");
+                    FARF(ALWAYS, "HMX not available, falling back to HVX matmul");
                     proc_matmul_req(ctx, &req, bufs, n_bufs);
                 }
+                // Release HMX manager
+                hmx_manager_reset();
                 break;
 
             case HTP_OP_HMX_MUL_MAT_ID:
+                FARF(ALWAYS, "execute HTP_OP_HMX_MUL_MAT_ID.");
                 if (n_bufs != 4) {
-                    FARF(ERROR, "Bad hmx-matmul-id-req buffer list");
+                    FARF(ALWAYS, "Bad hmx-matmul-id-req buffer list");
                     continue;
                 }
                 // For now, fall back to HVX matmul_id - HMX implementation will be added later
                 if (hmx_is_available()) {
-                    FARF(HIGH, "HMX matmul_id requested - using HVX fallback for now");
+                    FARF(ALWAYS, "HMX matmul_id requested - using HVX fallback for now");
                 }
                 proc_matmul_id_req(ctx, &req, bufs, n_bufs);
                 break;
